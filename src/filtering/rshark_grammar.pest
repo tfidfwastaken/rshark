@@ -1,0 +1,28 @@
+WHITESPACE = _{ " " }
+
+protocol = { "ip" | "dns" | "http" | "ftp" | "arp" | "ssh" | "telnet" | "icmp" }
+
+op = { comparison_op | logical_op }
+comparison_op = { eq | ne | gt | lt | ge | le }
+logical_op = { and | or | xor | not | "subseq" | "in" }
+
+eq = { "eq" | "==" }
+ne = { "ne" | "!=" }
+gt = { "gt" | ">" }
+lt = { "lt" | "<" }
+ge = { "ge" | ">=" }
+le = { "le" | "<=" }
+
+and = { "and" | "&&" }
+or = { "or" | "||" }
+xor = { "xor" | "^^" }
+not = { "not" | "!" }
+
+// value = { ipv4 | ip_cidr | ipv6 | eth | num }
+value = { ASCII_ALPHANUMERIC* }
+
+expr = {
+        "" |
+        (not)? ~ protocol ~ (op ~ value)*
+        ~ (logical_op ~ expr)*
+}
