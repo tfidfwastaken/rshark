@@ -6,6 +6,8 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
+use crate::filtering::DisplayFilter;
+
 use pnet::datalink::{self, NetworkInterface};
 use pnet::packet::arp::ArpPacket;
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
@@ -20,7 +22,7 @@ use pnet::packet::Packet;
 use pnet::util::MacAddr;
 
 /// Types of packets that are captured
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PacketType {
     TCP,
     UDP,
@@ -54,7 +56,7 @@ impl PacketInfo {
     /// * `source_ip` - Source IP address
     /// * `dest_ip` - Destination IP address
     /// * `data` - Header and payload data of the packet
-    fn new(
+    pub fn new(
         packet_type: PacketType,
         source_ip: Option<IpAddr>,
         dest_ip: Option<IpAddr>,
@@ -505,5 +507,36 @@ mod tests {
         assert_eq!(test_net_info.read().unwrap().packets.len(), 0);
         assert_eq!(test_net_info.read().unwrap().captured_packets, 0u64);
         assert_eq!(test_net_info.read().unwrap().dropped_packets, 1u64);
+    }
+
+    #[test]
+    fn build_filter_test() {
+        let df = DisplayFilter::new("ip == 192.168.0.1 && tcp").unwrap();
+        let byte_packet = [0u8; 200];
+        let packet1 = PacketInfo::new(
+            PacketType::UDP,
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1))),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
+            Box::new(UdpPacket::owned(byte_packet.to_vec()).unwrap()),
+        );
+        let packet2 = PacketInfo::new(
+            PacketType::TCP,
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1))),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
+            Box::new(UdpPacket::owned(byte_packet.to_vec()).unwrap()),
+        );
+        let packet3 = PacketInfo::new(
+            PacketType::TCP,
+            Some(IpAddr::V4(Ipv4Addr::new(192, 164, 0, 1))),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
+            Box::new(UdpPacket::owned(byte_packet.to_vec()).unwrap()),
+        );
+        println!("{:#?}", df);
+        let res1 = df.is_match(&packet1);
+        let res2 = df.is_match(&packet2);
+        let res3 = df.is_match(&packet3);
+        assert_eq!(res1, Ok(false));
+        assert_eq!(res2, Ok(true));
+        assert_eq!(res3, Ok(false));
     }
 }

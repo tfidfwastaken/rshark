@@ -10,6 +10,11 @@ edition = "2018"
 clap = "3.0.0-beta.1"
 tui = "0.10"
 termion = "1.5"
+pest = "2.0"
+pest_derive = "2.0"
+filters = "0.3.0"
+cidr-utils = "0.4.3"
+# log = "0.4.11"
 
 [dependencies.pnet]
 version = "0.26.0"
