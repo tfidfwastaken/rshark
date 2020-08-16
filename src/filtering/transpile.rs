@@ -42,55 +42,67 @@ impl DisplayFilter {
         Ok(stack.pop().unwrap())
     }
 
+    fn get_precedence(pair: Pair<Rule>) -> u8 {
+        match pair.as_rule() {
+            Rule::not => 3,
+            Rule::and => 2,
+            Rule::or => 1,
+        }
+    }
+
     fn parse_rule(mut parsed_query: Pairs<Rule>, mut stack: &mut Vec<Self>) {
         let mut pair = parsed_query.next().unwrap();
-        match pair.as_rule() {
-            Rule::primitive => {
-                let pair = pair.into_inner().next().unwrap();
-                Self::parse_primitive(pair, &mut stack);
-                Self::parse_rule(parsed_query, &mut stack);
-            }
-            Rule::and => {
-                pair = parsed_query.next().unwrap();
-                if let Some(next_pair) = pair.into_inner().next() {
-                    Self::parse_primitive(next_pair, &mut stack);
-                    let prim1 = stack.pop().unwrap();
-                    let prim2 = stack.pop().unwrap();
-                    let result = Self::And(Box::new(prim1), Box::new(prim2));
-                    stack.push(result);
-                    Self::parse_rule(parsed_query, &mut stack);
-                } else {
-                    return;
+        let mut operator_stack = Vec::new();
+        pair = pair.into_inner().next().unwrap();
+        parse_primitive(pair, &mut stack);
+        while let Some(pair) = stack.pop() {
+            match pair.as_rule() {
+                Rule::primitive => {
+                    Self::parse_primitive(pair, &mut stack);
                 }
-            }
-            Rule::or => {
-                pair = parsed_query.next().unwrap();
-                if let Some(next_pair) = pair.into_inner().next() {
-                    Self::parse_primitive(next_pair, &mut stack);
-                    let prim1 = stack.pop().unwrap();
-                    let prim2 = stack.pop().unwrap();
-                    let result = Self::Or(Box::new(prim1), Box::new(prim2));
-                    stack.push(result);
-                    Self::parse_rule(parsed_query, &mut stack);
-                } else {
-                    return;
+                Rule::and => {
+                    operator_stack.push(pair);
+                    pair = parsed_query.next().unwrap();
+                    if let Some(next_pair) = pair.into_inner().next() {
+                        Self::parse_primitive(next_pair, &mut stack);
+                        let prim1 = stack.pop().unwrap();
+                        let prim2 = stack.pop().unwrap();
+                        let result = Self::And(Box::new(prim1), Box::new(prim2));
+                        stack.push(result);
+                        Self::parse_rule(parsed_query, &mut stack);
+                    } else {
+                        return;
+                    }
                 }
-            }
-            Rule::not => {
-                pair = parsed_query.next().unwrap();
-                if let Some(next_pair) = pair.into_inner().next() {
-                    Self::parse_primitive(next_pair, &mut stack);
-                    let prim = stack.pop().unwrap();
-                    let result = Self::Not(Box::new(prim));
-                    stack.push(result);
-                    Self::parse_rule(parsed_query, &mut stack);
-                } else {
-                    return;
+                Rule::or => {
+                    pair = parsed_query.next().unwrap();
+                    if let Some(next_pair) = pair.into_inner().next() {
+                        Self::parse_primitive(next_pair, &mut stack);
+                        let prim1 = stack.pop().unwrap();
+                        let prim2 = stack.pop().unwrap();
+                        let result = Self::Or(Box::new(prim1), Box::new(prim2));
+                        stack.push(result);
+                        Self::parse_rule(parsed_query, &mut stack);
+                    } else {
+                        return;
+                    }
                 }
-            }
-            Rule::EOI => return,
-            rule @ _ => panic!("Failed in parsing rule, got {:?}", rule),
-        }       
+                Rule::not => {
+                    pair = parsed_query.next().unwrap();
+                    if let Some(next_pair) = pair.into_inner().next() {
+                        Self::parse_primitive(next_pair, &mut stack);
+                        let prim = stack.pop().unwrap();
+                        let result = Self::Not(Box::new(prim));
+                        stack.push(result);
+                        Self::parse_rule(parsed_query, &mut stack);
+                    } else {
+                        return;
+                    }
+                }
+                Rule::EOI => return,
+                rule @ _ => panic!("Failed in parsing rule, got {:?}", rule),
+            }       
+        }
     }
 
     fn parse_primitive(pair: Pair<Rule>, stack: &mut Vec<Self>) {
@@ -223,7 +235,7 @@ mod tests {
     #[test]
 
     fn parse_test() {
-        let unparsed_rule = "ip == 192.168.0.1 && tcp";
+        let unparsed_rule = "(ip == 192.168.0.1 || tcp) && arp";
 
         let rule = RsharkParser::parse(Rule::rule, &unparsed_rule)
             .expect("parse failed")
