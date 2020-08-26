@@ -7,18 +7,61 @@ use crate::network::{NetworkInfo, PacketInfo, PacketType};
 
 use termion::{event::Key, raw::IntoRawMode};
 use tui::{
-    backend::TermionBackend,
-    layout::{Alignment, Constraint, Direction, Layout},
+    backend::{Backend, TermionBackend},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Span, Spans},
+    text::{Span, Spans, Text},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-    Terminal,
+    terminal::{Frame, Terminal},
 };
 
 #[allow(unused_imports)]
 use pnet::packet::{
     arp::ArpPacket, icmp::IcmpPacket, icmpv6::Icmpv6Packet, tcp::TcpPacket, udp::UdpPacket,
 };
+
+// Footer info rendering
+fn draw_footer<B>(
+    f: &mut Frame<B>,
+    net_info: &Arc<RwLock<NetworkInfo>>,
+    filter_string: &str,
+    layout_chunk: Rect,
+)
+where
+    B: Backend,
+{
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Min(1)].as_ref())
+        .split(layout_chunk);
+    
+    let capture_info = vec![Spans::from(vec![
+        Span::raw(format!(
+            "Captured Packets: {} ",
+            net_info.read().unwrap().captured_packets
+        )),
+        Span::raw(format!(
+            "Dropped Packets: {} ",
+            net_info.read().unwrap().dropped_packets
+        )),
+    ])];
+
+    let capture_info_para = Paragraph::new(capture_info)
+        .block(Block::default())
+        .style(Style::default().fg(Color::White).bg(Color::Black))
+        .alignment(Alignment::Left);
+
+    f.render_widget(capture_info_para, chunks[0]);
+
+    let filter_text = Text::from(filter_string);
+    let search_info = Paragraph::new(filter_text).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().bg(Color::Black)),
+    );
+    f.render_widget(search_info, chunks[1]);
+}
+
 
 /// Main function which renders UI on the terminal
 pub fn draw_ui(
@@ -29,13 +72,16 @@ pub fn draw_ui(
     let backend = TermionBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let events = Events::new();
+    let mut events = Events::new();
 
     let mut packets_state_selected = true;
 
     let mut packets_state = ListState::default();
     let mut packets_info_state = ListState::default();
     let mut packets_info_len: usize = 0;
+
+    let mut filter_string = String::new();
+    let mut filter_search_active = false;
 
     while running.load(Ordering::Relaxed) {
         terminal.draw(|f| {
@@ -44,9 +90,9 @@ pub fn draw_ui(
                 .direction(Direction::Vertical)
                 .constraints(
                     [
-                        Constraint::Percentage(80),
+                        Constraint::Percentage(75),
                         Constraint::Percentage(15),
-                        Constraint::Percentage(5),
+                        Constraint::Percentage(10),
                     ]
                     .as_ref(),
                 )
@@ -124,117 +170,141 @@ pub fn draw_ui(
                 f.render_stateful_widget(items, chunks[1], &mut packets_info_state);
             }
 
+            if filter_search_active {
+                f.set_cursor(
+                    chunks[2].x + filter_string.len() as u16 + 1,
+                    chunks[2].y + 3,
+                );
+            }
             // Footer info rendering
-            let footer = vec![Spans::from(vec![
-                Span::raw(format!(
-                    "Captured Packets: {} ",
-                    net_info.read().unwrap().captured_packets
-                )),
-                Span::raw(format!(
-                    "Dropped Packets: {} ",
-                    net_info.read().unwrap().dropped_packets
-                )),
-            ])];
-
-            let footer_para = Paragraph::new(footer)
-                .block(Block::default())
-                .style(Style::default().fg(Color::White).bg(Color::Black))
-                .alignment(Alignment::Left);
-
-            f.render_widget(footer_para, chunks[2]);
+            draw_footer(f, &net_info, &filter_string, chunks[2]);
         })?;
 
         // Capture events from the keyboard
         match events.next()? {
-            Event::Input(input) => match input {
-                Key::Char('q') | Key::Ctrl('c') => {
-                    terminal.clear()?;
-                    running.store(false, Ordering::SeqCst);
-                }
-                Key::Left | Key::Esc => {
-                    packets_state.select(None);
-                }
-                Key::Down | Key::Char('j') => {
-                    if packets_state_selected {
-                        let i = match packets_state.selected() {
-                            Some(i) => {
-                                if i >= net_info.read().unwrap().packets.len() {
-                                    0
-                                } else {
-                                    i + 1
-                                }
+            Event::Input(input) => {
+                if filter_search_active {
+                    handle_filter_search(
+                        &input,
+                        &mut filter_string,
+                        &mut filter_search_active
+                    );
+                    events.disable_exit_key();
+                } else {
+                    events.enable_exit_key();
+                    match input {
+                        Key::Char('q') | Key::Ctrl('c') => {
+                            terminal.clear()?;
+                            running.store(false, Ordering::SeqCst);
+                        }
+                        Key::Left | Key::Esc => {
+                            packets_state.select(None);
+                        }
+                        Key::Down | Key::Char('j') => {
+                            if packets_state_selected {
+                                let i = match packets_state.selected() {
+                                    Some(i) => {
+                                        if i >= net_info.read().unwrap().packets.len() {
+                                            0
+                                        } else {
+                                            i + 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
+                                packets_state.select(Some(i));
+                            } else {
+                                let i = match packets_info_state.selected() {
+                                    Some(i) => {
+                                        if i >= packets_info_len {
+                                            0
+                                        } else {
+                                            i + 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
+                                packets_info_state.select(Some(i));
                             }
-                            None => 0,
-                        };
-                        packets_state.select(Some(i));
-                    } else {
-                        let i = match packets_info_state.selected() {
-                            Some(i) => {
-                                if i >= packets_info_len {
-                                    0
-                                } else {
-                                    i + 1
-                                }
+                        }
+                        Key::Up | Key::Char('k') => {
+                            if packets_state_selected {
+                                let i = match packets_state.selected() {
+                                    Some(i) => {
+                                        if i == 0 {
+                                            net_info.read().unwrap().packets.len().saturating_sub(1)
+                                        } else {
+                                            i - 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
+                                packets_state.select(Some(i));
+                            } else {
+                                let i = match packets_info_state.selected() {
+                                    Some(i) => {
+                                        if i == 0 {
+                                            packets_info_len.saturating_sub(1)
+                                        } else {
+                                            i - 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
+                                packets_info_state.select(Some(i));
                             }
-                            None => 0,
-                        };
-                        packets_info_state.select(Some(i));
+                        }
+                        Key::Char('g') => {
+                            if packets_state_selected {
+                                packets_state.select(Some(0));
+                            } else {
+                                packets_info_state.select(Some(0));
+                            }
+                        }
+                        Key::Char('G') => {
+                            if packets_state_selected {
+                                packets_state.select(Some(
+                                    net_info.read().unwrap().packets.len().saturating_sub(1),
+                                ));
+                            } else {
+                                packets_info_state.select(Some(packets_info_len.saturating_sub(1)));
+                            }
+                        }
+                        Key::Char('\t') | Key::Char('J') => {
+                            packets_state_selected = !packets_state_selected;
+                        }
+                        Key::Char('/') => {
+                            filter_search_active = true;
+                        }
+                        _ => {}
                     }
                 }
-                Key::Up | Key::Char('k') => {
-                    if packets_state_selected {
-                        let i = match packets_state.selected() {
-                            Some(i) => {
-                                if i == 0 {
-                                    net_info.read().unwrap().packets.len().saturating_sub(1)
-                                } else {
-                                    i - 1
-                                }
-                            }
-                            None => 0,
-                        };
-                        packets_state.select(Some(i));
-                    } else {
-                        let i = match packets_info_state.selected() {
-                            Some(i) => {
-                                if i == 0 {
-                                    packets_info_len.saturating_sub(1)
-                                } else {
-                                    i - 1
-                                }
-                            }
-                            None => 0,
-                        };
-                        packets_info_state.select(Some(i));
-                    }
-                }
-                Key::Char('g') => {
-                    if packets_state_selected {
-                        packets_state.select(Some(0));
-                    } else {
-                        packets_info_state.select(Some(0));
-                    }
-                }
-                Key::Char('G') => {
-                    if packets_state_selected {
-                        packets_state.select(Some(
-                            net_info.read().unwrap().packets.len().saturating_sub(1),
-                        ));
-                    } else {
-                        packets_info_state.select(Some(packets_info_len.saturating_sub(1)));
-                    }
-                }
-                Key::Char('\t') | Key::Char('J') => {
-                    packets_state_selected = !packets_state_selected;
-                }
-                _ => {}
             },
             Event::Tick => {}
         }
     }
-
     Ok(())
 }
+
+fn handle_filter_search(
+    input: &Key,
+    filter_string: &mut String,
+    filter_search_active: &mut bool
+) {
+    match input {
+        Key::Esc => {
+            *filter_search_active = false;
+        }
+        Key::Char(c) => {
+            filter_string.push(*c);
+        }
+        Key::Backspace => {
+            filter_string.pop();
+        }
+        _ => {}
+    }
+}
+            
 
 /// Get header of packet capture UI
 fn get_packets_ui_header() -> String {
